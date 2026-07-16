@@ -30,7 +30,7 @@ jobs:
           fi
           rm -rf temp_unzip
 
-      - name: Auto-Patch React Code for Share & Bluetooth Injection (via Node)
+      - name: Auto-Patch React Code for Share & Bluetooth Classic (via Node)
         run: |
           node -e "
           const fs = require('fs');
@@ -126,14 +126,13 @@ jobs:
             console.log('React Share Code successfully patched!');
           }
 
-          // 2. حقن مشغّل البلوتوث الذكي في ملف البداية الرئيسي (main.tsx) بشكل آمن دون استخدام Backticks متعارضة
+          // 2. حقن مشغّل البلوتوث الكلاسيكي الذكي في ملف البداية الرئيسي (main.tsx) ليعمل مع كافة الطابعات العادية
           const mainPath = 'src/main.tsx';
           if (fs.existsSync(mainPath)) {
-            console.log('Injecting Bluetooth polyfill into main.tsx...');
+            console.log('Injecting Bluetooth Classic polyfill into main.tsx...');
             let mainContent = fs.readFileSync(mainPath, 'utf8');
 
             const polyfillLines = [
-              'import { BleClient } from \"@capacitor-community/bluetooth-le\";',
               'import { Capacitor } from \"@capacitor/core\";',
               '',
               'if (Capacitor.isNativePlatform()) {',
@@ -144,48 +143,103 @@ jobs:
               '  ',
               '  // @ts-ignore',
               '  navigator.bluetooth.requestDevice = async function(options) {',
-              '    try {',
-              '      await BleClient.initialize();',
-              '      const device = await BleClient.requestDevice();',
-              '      return {',
-              '        id: device.deviceId,',
-              '        name: device.name || \"طابعة بلوتوث\",',
-              '        gatt: {',
-              '          connected: false,',
-              '          connect: async function() {',
-              '            await BleClient.connect(device.deviceId);',
+              '    return new Promise((resolve, reject) => {',
+              '      const win = window as any;',
+              '      if (!win.bluetoothSerial) {',
+              '        return reject(new Error(\"إضافة البلوتوث الكلاسيكي غير متوفرة!\"));',
+              '      }',
+              '      ',
+              '      // البدء بالبحث والمسح عن الأجهزة الكلاسيكية غير المقترنة والمقترنة',
+              '      win.bluetoothSerial.discoverUnpaired(function(devices: any[]) {',
+              '        if (devices.length === 0) {',
+              '          // إذا لم يجد أجهزة غير مقترنة، نحاول جلب الأجهزة المقترنة مسبقاً بالتلفون مباشرة كخطة بديلة',
+              '          win.bluetoothSerial.list(function(pairedDevices: any[]) {',
+              '            showDeviceSelection(pairedDevices, resolve, reject);',
+              '          }, reject);',
+              '        } else {',
+              '          showDeviceSelection(devices, resolve, reject);',
+              '        }',
+              '      }, function(err: any) {',
+              '         // في حال حدوث خطأ بالمسح، نلجأ فوراً للأجهزة المقترنة كخيار آمن',
+              '         win.bluetoothSerial.list(function(pairedDevices: any[]) {',
+              '           showDeviceSelection(pairedDevices, resolve, reject);',
+              '         }, reject);',
+              '      });',
+              '    });',
+              '  };',
+              '}',
+              '',
+              'function showDeviceSelection(devices: any[], resolve: any, reject: any) {',
+              '  if (devices.length === 0) {',
+              '    alert(\"لم يتم العثور على أي طابعة بلوتوث قريبة! تأكد من تشغيل الطابعة واقترانها بالهاتف.\");',
+              '    return reject(new Error(\"No devices found\"));',
+              '  }',
+              '  ',
+              '  // بناء قائمة لاختيار الطابعة يدوياً بشكل بسيط ومباشر للمستخدم',
+              '  const deviceList = devices.map((d, index) => `${index + 1}. ${d.name || \"طابعة مجهولة\"} (${d.address || d.id})`).join(\"\\n\");',
+              '  const selection = prompt(\"الرجاء إدخال رقم الطابعة التي ترغب بالاتصال بها:\\n\\n\" + deviceList, \"1\");',
+              '  ',
+              '  if (selection === null) {',
+              '    return reject(new Error(\"User cancelled selection\"));',
+              '  }',
+              '  ',
+              '  const selectedIndex = parseInt(selection) - 1;',
+              '  if (isNaN(selectedIndex) || selectedIndex < 0 || selectedIndex >= devices.length) {',
+              '    alert(\"اختيار غير صحيح!\");',
+              '    return reject(new Error(\"Invalid selection\"));',
+              '  }',
+              '  ',
+              '  const device = devices[selectedIndex];',
+              '  const deviceAddress = device.address || device.id;',
+              '  ',
+              '  // إرجاع كائن متوافق مع واجهة الويب لربط البيانات بنجاح',
+              '  resolve({',
+              '    id: deviceAddress,',
+              '    name: device.name || \"طابعة بلوتوث\",',
+              '    gatt: {',
+              '      connected: false,',
+              '      connect: async function() {',
+              '        return new Promise((resGatt, rejGatt) => {',
+              '          const win = window as any;',
+              '          win.bluetoothSerial.connect(deviceAddress, function() {',
               '            this.connected = true;',
-              '            return {',
-              '              getPrimaryService: async function(serviceUuid) {',
+              '            resGatt({',
+              '              getPrimaryService: async function(serviceUuid: string) {',
               '                return {',
-              '                  getCharacteristic: async function(charUuid) {',
+              '                  getCharacteristic: async function(charUuid: string) {',
               '                    return {',
-              '                      writeValue: async function(value) {',
-              '                        await BleClient.writeWithoutResponse(device.deviceId, serviceUuid, charUuid, value);',
+              '                      writeValue: async function(value: any) {',
+              '                        return new Promise((resWrite, rejWrite) => {',
+              '                          let dataToSend = value;',
+              '                          if (value instanceof ArrayBuffer || value.buffer) {',
+              '                            dataToSend = new Uint8Array(value.buffer || value);',
+              '                          }',
+              '                          win.bluetoothSerial.write(dataToSend, resWrite, rejWrite);',
+              '                        });',
               '                      }',
               '                    };',
               '                  }',
               '                };',
               '              }',
-              '            };',
-              '          },',
-              '          disconnect: async function() {',
-              '            await BleClient.disconnect(device.deviceId);',
-              '            this.connected = false;',
-              '          }',
-              '        }',
-              '      };',
-              '    } catch (err) {',
-              '      console.error(\"Bluetooth LE Error in Polyfill: \", err);',
-              '      throw err;',
+              '            });',
+              '          }, rejGatt);',
+              '        });',
+              '      },',
+              '      disconnect: async function() {',
+              '        return new Promise((resDisc) => {',
+              '          const win = window as any;',
+              '          win.bluetoothSerial.disconnect(resDisc, resDisc);',
+              '          this.connected = false;',
+              '        });',
+              '      }',
               '    }',
-              '  };',
+              '  });',
               '}'
             ].join('\n');
             
             mainContent = polyfillLines + '\n' + mainContent;
             fs.writeFileSync(mainPath, mainContent, 'utf8');
-            console.log('Bluetooth polyfill injected successfully!');
+            console.log('Bluetooth Classic polyfill successfully injected!');
           }
           "
 
@@ -204,9 +258,9 @@ jobs:
         run: |
           npm install --force
 
-      - name: Install Capacitor Core, Plugins & Bluetooth LE (Before Build)
+      - name: Install Capacitor, Plugins & Bluetooth Classic Serial Plugin
         run: |
-          npm install @capacitor/core@latest @capacitor/cli@latest @capacitor/android@latest @capacitor/filesystem@latest @capacitor/share@latest @capacitor-community/bluetooth-le@latest --force
+          npm install @capacitor/core@latest @capacitor/cli@latest @capacitor/android@latest @capacitor/filesystem@latest @capacitor/share@latest cordova-plugin-bluetooth-serial@latest --force
 
       - name: Build Web Application
         run: npm run build
@@ -217,7 +271,7 @@ jobs:
           npx cap add android
           npx cap sync android
 
-      - name: Configure FileProvider and Bluetooth Permissions
+      - name: Configure FileProvider and Bluetooth Classic Permissions
         run: |
           mkdir -p android/app/src/main/res/xml
           
@@ -232,9 +286,9 @@ jobs:
 
           MANIFEST_PATH="android/app/src/main/AndroidManifest.xml"
           if [ -f "$MANIFEST_PATH" ]; then
-            echo "Configuring AndroidManifest with Bluetooth, Location, Camera, and FileProvider permissions..."
+            echo "Configuring AndroidManifest with Bluetooth Classic, Location, and FileProvider..."
             
-            PERMISSIONS_BLOCK='    <!-- صلاحيات الكاميرا والتخزين -->\n    <uses-permission android:name="android.permission.CAMERA" />\n    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />\n    <uses-feature android:name="android.hardware.camera" android:required="false" />\n    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />\n\n    <!-- صلاحيات البلوتوث والموقع (مهمة جداً للبحث عن الطابعات واقترانها) -->\n    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />\n    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />\n    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />\n    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />\n    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />\n    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />'
+            PERMISSIONS_BLOCK='    \n    <uses-permission android:name="android.permission.CAMERA" />\n    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />\n    <uses-feature android:name="android.hardware.camera" android:required="false" />\n\n    \n    <uses-permission android:name="android.permission.BLUETOOTH" />\n    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />\n    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />\n    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />\n    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />\n    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />'
             
             sed -i "/<\/manifest>/i $PERMISSIONS_BLOCK" $MANIFEST_PATH
             
