@@ -126,7 +126,7 @@ jobs:
             console.log('React Share Code successfully patched!');
           }
 
-          // 2. حقن مشغّل البلوتوث الكلاسيكي الذكي في ملف البداية الرئيسي (main.tsx) مع صياغة نصوص آمنة للـ Bash والـ YAML
+          // 2. حقن مشغّل البلوتوث الكلاسيكي الذكي في ملف البداية الرئيسي (main.tsx) دون أي رموز متعارضة
           const mainPath = 'src/main.tsx';
           if (fs.existsSync(mainPath)) {
             console.log('Injecting Bluetooth Classic polyfill into main.tsx...');
@@ -172,14 +172,14 @@ jobs:
               '    return reject(new Error(\"No devices found\"));',
               '  }',
               '  ',
-              '  // دمج النصوص العادي لتفادي مشاكل الـ Backticks والـ Dollar Sign في Bash',
+              '  const newlineChar = String.fromCharCode(10);',
               '  const deviceList = devices.map(function(d, index) {',
               '    const name = d.name || \"طابعة مجهولة\";',
               '    const addr = d.address || d.id || \"\";',
               '    return (index + 1) + \". \" + name + \" (\" + addr + \")\";',
-              '  }).join(\"\\n\");',
+              '  }).join(newlineChar);',
               '  ',
-              '  const selection = prompt(\"الرجاء إدخال رقم الطابعة التي ترغب بالاتصال بها:\\n\\n\" + deviceList, \"1\");',
+              '  const selection = prompt(\"الرجاء إدخال رقم الطابعة التي ترغب بالاتصال بها:\" + newlineChar + newlineChar + deviceList, \"1\");',
               '  ',
               '  if (selection === null) {',
               '    return reject(new Error(\"User cancelled selection\"));',
