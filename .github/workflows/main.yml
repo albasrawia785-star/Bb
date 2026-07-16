@@ -126,7 +126,7 @@ jobs:
             console.log('React Share Code successfully patched!');
           }
 
-          // 2. حقن مشغّل البلوتوث الكلاسيكي الذكي مع فحص الصلاحيات البرمجية لمنع الكراش
+          // 2. حقن مشغّل البلوتوث الكلاسيكي في ملف البداية الرئيسي (main.tsx)
           const mainPath = 'src/main.tsx';
           if (fs.existsSync(mainPath)) {
             console.log('Injecting Bluetooth Classic polyfill into main.tsx...');
@@ -149,45 +149,20 @@ jobs:
               '        return reject(new Error(\"إضافة البلوتوث الكلاسيكي غير متوفرة!\"));',
               '      }',
               '      ',
-              '      // دالة لتنفيذ عملية البحث الفعلي عن الأجهزة بعد الاطمئنان على الصلاحيات',
-              '      const startScan = () => {',
-              '        win.bluetoothSerial.discoverUnpaired(function(devices: any[]) {',
-              '          if (devices.length === 0) {',
-              '            win.bluetoothSerial.list(function(pairedDevices: any[]) {',
-              '              showDeviceSelection(pairedDevices, resolve, reject);',
-              '            }, reject);',
-              '          } else {',
-              '            showDeviceSelection(devices, resolve, reject);',
-              '          }',
-              '        }, function(err: any) {',
-              '           win.bluetoothSerial.list(function(pairedDevices: any[]) {',
-              '             showDeviceSelection(pairedDevices, resolve, reject);',
-              '           }, reject);',
-              '        });',
-              '      };',
-              '      ',
-              '      // فحص وطلب الأذونات برمجياً قبل البدء بالمسح لتجنب الخروج المفاجئ (Crash)',
-              '      if (win.Capacitor && win.Capacitor.Plugins && win.Capacitor.Plugins.Permissions) {',
-              '        win.Capacitor.Plugins.Permissions.query({ name: \"bluetooth\" }).then((status: any) => {',
-              '          if (status.state === \"granted\") {',
-              '            startScan();',
-              '          } else {',
-              '            win.Capacitor.Plugins.Permissions.request({ name: \"bluetooth\" }).then((newStatus: any) => {',
-              '              if (newStatus.state === \"granted\") {',
-              '                startScan();',
-              '              } else {',
-              '                alert(\"يجب السماح بالوصول إلى البلوتوث للاقتران بالطابعة!\");',
-              '                reject(new Error(\"Permission denied\"));',
-              '              }',
-              '            });',
-              '          }',
-              '        }).catch(() => {',
-              '          // في حال فشل الاستعلام التلقائي، ننفذ مباشرة كخيار بديل لتفادي التوقف',
-              '          startScan();',
-              '        });',
-              '      } else {',
-              '        startScan();',
-              '      }',
+              '      // بدء البحث مباشرة معتمدين على الصلاحيات التي تم منحها عند تشغيل التطبيق',
+              '      win.bluetoothSerial.discoverUnpaired(function(devices: any[]) {',
+              '        if (devices.length === 0) {',
+              '          win.bluetoothSerial.list(function(pairedDevices: any[]) {',
+              '            showDeviceSelection(pairedDevices, resolve, reject);',
+              '          }, reject);',
+              '        } else {',
+              '          showDeviceSelection(devices, resolve, reject);',
+              '        }',
+              '      }, function(err: any) {',
+              '         win.bluetoothSerial.list(function(pairedDevices: any[]) {',
+              '           showDeviceSelection(pairedDevices, resolve, reject);',
+              '         }, reject);',
+              '      });',
               '    });',
               '  };',
               '}',
@@ -297,6 +272,39 @@ jobs:
           npx cap init "Saydali Pro POS" "com.saydalipro.pos" --web-dir=dist
           npx cap add android
           npx cap sync android
+
+      - name: Force Native Permissions on Startup (MainActivity.java)
+        run: |
+          mkdir -p android/app/src/main/java/com/saydalipro/pos
+          cat << 'EOF' > android/app/src/main/java/com/saydalipro/pos/MainActivity.java
+          package com.saydalipro.pos;
+
+          import android.Manifest;
+          import android.os.Build;
+          import android.os.Bundle;
+          import androidx.core.app.ActivityCompat;
+          import com.getcapacitor.BridgeActivity;
+
+          public class MainActivity extends BridgeActivity {
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  
+                  // طلب الصلاحيات رسمياً عند فتح التطبيق لتجنب الانهيار المفاجئ
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                      ActivityCompat.requestPermissions(this, new String[]{
+                          Manifest.permission.BLUETOOTH_SCAN,
+                          Manifest.permission.BLUETOOTH_CONNECT,
+                          Manifest.permission.ACCESS_FINE_LOCATION
+                      }, 1);
+                  } else {
+                      ActivityCompat.requestPermissions(this, new String[]{
+                          Manifest.permission.ACCESS_FINE_LOCATION
+                      }, 1);
+                  }
+              }
+          }
+          EOF
 
       - name: Configure FileProvider and Bluetooth Classic Permissions
         run: |
