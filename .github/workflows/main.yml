@@ -1,0 +1,271 @@
+name: Build Android APK
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Pre-Clean Conflicting Configurations
+        run: |
+          rm -rf capacitor.config.ts capacitor.config.json
+
+      - name: Unzip Project Files
+        run: |
+          unzip "pos.zip--صيدلي-برو" -d temp_unzip || unzip *.zip -d temp_unzip || true
+          TARGET_DIR=$(find temp_unzip -name "package.json" -exec dirname {} \;)
+          if [ -n "$TARGET_DIR" ]; then
+            echo "Found project files in: $TARGET_DIR"
+            cp -r "$TARGET_DIR"/* .
+          else
+            echo "Error: package.json not found!"
+            exit 1
+          fi
+          rm -rf temp_unzip
+
+      - name: Auto-Patch React Code for Share & Bluetooth Injection (via Node)
+        run: |
+          node -e "
+          const fs = require('fs');
+          const path = require('path');
+
+          function findTargetFiles(dir, words, foundFiles = []) {
+            const files = fs.readdirSync(dir);
+            for (const file of files) {
+              const fullPath = path.join(dir, file);
+              const stat = fs.statSync(fullPath);
+              if (stat.isDirectory()) {
+                findTargetFiles(fullPath, words, foundFiles);
+              } else if (stat.isFile() && /\.(js|jsx|ts|tsx)$/.test(file)) {
+                const content = fs.readFileSync(fullPath, 'utf8');
+                if (words.some(word => content.includes(word))) {
+                  foundFiles.push(fullPath);
+                }
+              }
+            }
+            return foundFiles;
+          }
+
+          // 1. معالجة وتعديل ملف مشاركة النسخ الاحتياطية (SettingsScreen)
+          const shareFiles = findTargetFiles('src', ['تم تصدير', 'تصدير ومشاركة', 'download']);
+          if (shareFiles.length > 0) {
+            const targetFile = shareFiles[0];
+            console.log('Found Share Target File:', targetFile);
+            let content = fs.readFileSync(targetFile, 'utf8');
+
+            const imports = 'import { Filesystem, Directory } from \"@capacitor/filesystem\";\nimport { Share } from \"@capacitor/share\";\nimport { Capacitor } from \"@capacitor/core\";\n';
+            content = imports + content;
+
+            const patchCode = [
+              '',
+              'window.handleCapacitorShare = async (blobOrUrl, fallbackFileName) => {',
+              '  try {',
+              '    const fileName = fallbackFileName || (\"Saydali_Pro_Backup_\" + Date.now() + \".zip\");',
+              '    let base64Data = \"\";',
+              '    if (typeof blobOrUrl === \"string\" && blobOrUrl.startsWith(\"data:\")) {',
+              '      base64Data = blobOrUrl.split(\",\")[1];',
+              '    } else {',
+              '      const response = await fetch(blobOrUrl);',
+              '      const blob = await response.blob();',
+              '      base64Data = await new Promise((resolve) => {',
+              '        const reader = new FileReader();',
+              '        reader.onloadend = () => resolve(reader.result.split(\",\")[1]);',
+              '        reader.readAsDataURL(blob);',
+              '      });',
+              '    }',
+              '    if (Capacitor.isNativePlatform()) {',
+              '      await Filesystem.requestPermissions();',
+              '      const tempFile = await Filesystem.writeFile({',
+              '        path: fileName,',
+              '        data: base64Data,',
+              '        directory: Directory.Cache',
+              '      });',
+              '      const canShare = await Share.canShare();',
+              '      if (canShare.value) {',
+              '        await Share.share({',
+              '          title: \"نسخة احتياطية - صيدلي برو\",',
+              '          text: \"ملف النسخة الاحتياطية لقاعدة البيانات.\",',
+              '          url: tempFile.uri,',
+              '          dialogTitle: \"تصدير ومشاركة النسخة الاحتياطية\"',
+              '        });',
+              '      } else {',
+              '        await Filesystem.writeFile({',
+              '          path: fileName,',
+              '          data: base64Data,',
+              '          directory: Directory.Documents',
+              '        });',
+              '        alert(\"تم حفظ الملف في مجلد المستندات Documents بنجاح!\");',
+              '      }',
+              '    } else {',
+              '      const link = document.createElement(\"a\");',
+              '      link.href = \"data:application/zip;base64,\" + base64Data;',
+              '      link.download = fileName;',
+              '      document.body.appendChild(link);',
+              '      link.click();',
+              '      document.body.removeChild(link);',
+              '    }',
+              '  } catch (e) {',
+              '    console.error(\"فشلت عملية المشاركة البرمجية:\", e);',
+              '  }',
+              '};'
+            ].join('\n');
+
+            content = content + '\n' + patchCode;
+            content = content.replace(/([a-zA-Z0-9_]*)\.click\(\)/g, (match, p1) => {
+              return 'if (window.handleCapacitorShare) { window.handleCapacitorShare(' + p1 + '.href || ' + p1 + ', \"Saydali_Pro_Backup.zip\"); } else { ' + match + ' }';
+            });
+
+            fs.writeFileSync(targetFile, content, 'utf8');
+            console.log('React Share Code successfully patched!');
+          }
+
+          // 2. حقن مشغّل البلوتوث الذكي في ملف البداية الرئيسي (main.tsx) ليعمل في كامل التطبيق فور تشغيله
+          const mainPath = 'src/main.tsx';
+          if (fs.existsSync(mainPath)) {
+            console.log('Injecting Bluetooth polyfill into main.tsx...');
+            let mainContent = fs.readFileSync(mainPath, 'utf8');
+
+            const polyfillCode = `
+            import { BleClient } from "@capacitor-community/bluetooth-le";
+            import { Capacitor } from "@capacitor/core";
+
+            if (Capacitor.isNativePlatform()) {
+              if (!navigator.bluetooth) {
+                // @ts-ignore
+                navigator.bluetooth = {};
+              }
+              
+              // إعادة توجيه طلبات البحث عن الأجهزة إلى إضافة الموبايل الأصلية مباشرة
+              // @ts-ignore
+              navigator.bluetooth.requestDevice = async function(options) {
+                try {
+                  await BleClient.initialize();
+                  const device = await BleClient.requestDevice();
+                  // تحويل كائن جهاز الموبايل ليتطابق بنيوياً مع كائن البلوتوث في الويب لكي لا يحدث خطأ في الـ React
+                  return {
+                    id: device.deviceId,
+                    name: device.name || "طابعة بلوتوث",
+                    gatt: {
+                      connected: false,
+                      connect: async function() {
+                        await BleClient.connect(device.deviceId);
+                        this.connected = true;
+                        return {
+                          getPrimaryService: async function(serviceUuid) {
+                            return {
+                              getCharacteristic: async function(charUuid) {
+                                return {
+                                  writeValue: async function(value) {
+                                    await BleClient.writeWithoutResponse(device.deviceId, serviceUuid, charUuid, value);
+                                  }
+                                };
+                              }
+                            };
+                          }
+                        };
+                      },
+                      disconnect: async function() {
+                        await BleClient.disconnect(device.deviceId);
+                        this.connected = false;
+                      }
+                    }
+                  };
+                } catch (err) {
+                  console.error("Bluetooth LE Error in Polyfill: ", err);
+                  throw err;
+                }
+              };
+            }
+            `;
+            
+            mainContent = polyfillCode + '\n' + mainContent;
+            fs.writeFileSync(mainPath, mainContent, 'utf8');
+            console.log('Bluetooth polyfill injected successfully!');
+          }
+          "
+
+      - name: Deep Clean Environment
+        run: |
+          rm -rf node_modules package-lock.json dist android
+          find . -name "capacitor.config.ts" -delete
+          find . -name "capacitor.config.json" -delete
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Project Dependencies
+        run: |
+          npm install --force
+
+      - name: Install Capacitor Core, Plugins & Bluetooth LE (Before Build)
+        run: |
+          npm install @capacitor/core@latest @capacitor/cli@latest @capacitor/android@latest @capacitor/filesystem@latest @capacitor/share@latest @capacitor-community/bluetooth-le@latest --force
+
+      - name: Build Web Application
+        run: npm run build
+
+      - name: Initialize Capacitor Android
+        run: |
+          npx cap init "Saydali Pro POS" "com.saydalipro.pos" --web-dir=dist
+          npx cap add android
+          npx cap sync android
+
+      - name: Configure FileProvider and Bluetooth Permissions
+        run: |
+          mkdir -p android/app/src/main/res/xml
+          
+          cat << 'EOF' > android/app/src/main/res/xml/file_paths.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <paths xmlns:android="http://schemas.android.com/apk/res/android">
+              <external-path name="external_files" path="."/>
+              <cache-path name="cache_files" path="."/>
+              <files-path name="files" path="."/>
+          </paths>
+          EOF
+
+          MANIFEST_PATH="android/app/src/main/AndroidManifest.xml"
+          if [ -f "$MANIFEST_PATH" ]; then
+            echo "Configuring AndroidManifest with Bluetooth, Location, Camera, and FileProvider permissions..."
+            
+            PERMISSIONS_BLOCK='    <!-- صلاحيات الكاميرا والتخزين -->\n    <uses-permission android:name="android.permission.CAMERA" />\n    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />\n    <uses-feature android:name="android.hardware.camera" android:required="false" />\n    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />\n\n    <!-- صلاحيات البلوتوث والموقع (مهمة جداً للبحث عن الطابعات واقترانها) -->\n    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />\n    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />\n    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />\n    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />\n    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />\n    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />'
+            
+            sed -i "/<\/manifest>/i $PERMISSIONS_BLOCK" $MANIFEST_PATH
+            
+            PROVIDER_TAG='<provider android:name="androidx.core.content.FileProvider" android:authorities="${applicationId}.fileprovider" android:exported="false" android:grantUriPermissions="true"><meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" /></provider>'
+            sed -i "s|</application>|    $PROVIDER_TAG\n    </application>|" $MANIFEST_PATH
+          fi
+
+      - name: Update Kotlin & Gradle Versions for Java 21
+        run: |
+          cd android
+          if [ -f "build.gradle" ]; then
+            sed -i 's/ext.kotlin_version = .*/ext.kotlin_version = "1.9.24"/g' build.gradle
+            sed -i 's/kotlin_version = .*/kotlin_version = "1.9.24"/g' build.gradle
+          fi
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+
+      - name: Build Android APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon -Dorg.gradle.project.android.useAndroidX=true
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Saydali-Pro-APK-${{ github.run_id }}-${{ github.run_attempt }}
+          path: android/app/build/outputs/apk/debug/app-debug.apk
