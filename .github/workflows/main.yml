@@ -126,66 +126,64 @@ jobs:
             console.log('React Share Code successfully patched!');
           }
 
-          // 2. حقن مشغّل البلوتوث الذكي في ملف البداية الرئيسي (main.tsx) ليعمل في كامل التطبيق فور تشغيله
+          // 2. حقن مشغّل البلوتوث الذكي في ملف البداية الرئيسي (main.tsx) بشكل آمن دون استخدام Backticks متعارضة
           const mainPath = 'src/main.tsx';
           if (fs.existsSync(mainPath)) {
             console.log('Injecting Bluetooth polyfill into main.tsx...');
             let mainContent = fs.readFileSync(mainPath, 'utf8');
 
-            const polyfillCode = `
-            import { BleClient } from "@capacitor-community/bluetooth-le";
-            import { Capacitor } from "@capacitor/core";
-
-            if (Capacitor.isNativePlatform()) {
-              if (!navigator.bluetooth) {
-                // @ts-ignore
-                navigator.bluetooth = {};
-              }
-              
-              // إعادة توجيه طلبات البحث عن الأجهزة إلى إضافة الموبايل الأصلية مباشرة
-              // @ts-ignore
-              navigator.bluetooth.requestDevice = async function(options) {
-                try {
-                  await BleClient.initialize();
-                  const device = await BleClient.requestDevice();
-                  // تحويل كائن جهاز الموبايل ليتطابق بنيوياً مع كائن البلوتوث في الويب لكي لا يحدث خطأ في الـ React
-                  return {
-                    id: device.deviceId,
-                    name: device.name || "طابعة بلوتوث",
-                    gatt: {
-                      connected: false,
-                      connect: async function() {
-                        await BleClient.connect(device.deviceId);
-                        this.connected = true;
-                        return {
-                          getPrimaryService: async function(serviceUuid) {
-                            return {
-                              getCharacteristic: async function(charUuid) {
-                                return {
-                                  writeValue: async function(value) {
-                                    await BleClient.writeWithoutResponse(device.deviceId, serviceUuid, charUuid, value);
-                                  }
-                                };
-                              }
-                            };
-                          }
-                        };
-                      },
-                      disconnect: async function() {
-                        await BleClient.disconnect(device.deviceId);
-                        this.connected = false;
-                      }
-                    }
-                  };
-                } catch (err) {
-                  console.error("Bluetooth LE Error in Polyfill: ", err);
-                  throw err;
-                }
-              };
-            }
-            `;
+            const polyfillLines = [
+              'import { BleClient } from \"@capacitor-community/bluetooth-le\";',
+              'import { Capacitor } from \"@capacitor/core\";',
+              '',
+              'if (Capacitor.isNativePlatform()) {',
+              '  if (!navigator.bluetooth) {',
+              '    // @ts-ignore',
+              '    navigator.bluetooth = {};',
+              '  }',
+              '  ',
+              '  // @ts-ignore',
+              '  navigator.bluetooth.requestDevice = async function(options) {',
+              '    try {',
+              '      await BleClient.initialize();',
+              '      const device = await BleClient.requestDevice();',
+              '      return {',
+              '        id: device.deviceId,',
+              '        name: device.name || \"طابعة بلوتوث\",',
+              '        gatt: {',
+              '          connected: false,',
+              '          connect: async function() {',
+              '            await BleClient.connect(device.deviceId);',
+              '            this.connected = true;',
+              '            return {',
+              '              getPrimaryService: async function(serviceUuid) {',
+              '                return {',
+              '                  getCharacteristic: async function(charUuid) {',
+              '                    return {',
+              '                      writeValue: async function(value) {',
+              '                        await BleClient.writeWithoutResponse(device.deviceId, serviceUuid, charUuid, value);',
+              '                      }',
+              '                    };',
+              '                  }',
+              '                };',
+              '              }',
+              '            };',
+              '          },',
+              '          disconnect: async function() {',
+              '            await BleClient.disconnect(device.deviceId);',
+              '            this.connected = false;',
+              '          }',
+              '        }',
+              '      };',
+              '    } catch (err) {',
+              '      console.error(\"Bluetooth LE Error in Polyfill: \", err);',
+              '      throw err;',
+              '    }',
+              '  };',
+              '}'
+            ].join('\n');
             
-            mainContent = polyfillCode + '\n' + mainContent;
+            mainContent = polyfillLines + '\n' + mainContent;
             fs.writeFileSync(mainPath, mainContent, 'utf8');
             console.log('Bluetooth polyfill injected successfully!');
           }
